@@ -5,290 +5,521 @@
 #include <sys/mman.h>
 #include <time.h>
 #include <sys/wait.h>
+#include <string.h>
+#include <ncurses.h>
 
-#define GRID_SIZE 8
+#define ROW_SIZE 8
 #define SHIPS 5
 #define TILE '.'
 #define HIT 'X'
-#define SHIP 'S'
 #define MISS 'O'
-
-// Structure for the battlefield
-typedef struct
-{
-    char parentGrid[GRID_SIZE][GRID_SIZE]; // Parent's grid
-    char childGrid[GRID_SIZE][GRID_SIZE];  // Child's grid
-    int turn;                              // To track whose turn it is
-    int remainingShipsPar;                 // Number of parent's ships left
-    int remainingShipsChild;               // Number of child's ships left
-} BattleFieldInfo;
+#define DESTROYER 'D'
+#define BATTLESHIP 'B'
+#define CRUISER 'C'
+#define SAVE_FILE "battleship_save.dat"
 
 typedef struct
 {
-    int size;
-    int dx;
-    int dy;
-
+	int size;
+	char sign;
 } Ship;
 
-void initializeMap(char grid[GRID_SIZE][GRID_SIZE])
-{ // initializes the map by placing 'O' on each tile
-    for (int i = 0; i < GRID_SIZE; i++)
-    {
-        for (int j = 0; j < GRID_SIZE; j++)
-        {
-            grid[i][j] = TILE;
-        }
-    }
-}
+Ship ships[SHIPS] = {
+	{4, BATTLESHIP},
+	{3, CRUISER},
+	{3, CRUISER},
+	{2, DESTROYER},
+	{2, DESTROYER},
+};
 
-int isPlaceAvailable(int x, int y, char grid[GRID_SIZE][GRID_SIZE], Ship ship, int dx, int dy)
+typedef struct
 {
-    for (int i = 0; i < ship.size; i++)
-    {
-        int nx = x + i * dx;
-        int ny = y + i * dy;
+	char parentGrid[ROW_SIZE][ROW_SIZE]; // Parent's grid
+	char childGrid[ROW_SIZE][ROW_SIZE];  // Child's grid
+	int turn;                            // To track whose turn it is
+	int gameOver;
+	Ship parShips[SHIPS];
+	Ship childShips[SHIPS];
+} BattleFieldInfo;
 
-        if (nx < 0 || nx >= GRID_SIZE || ny < 0 || ny >= GRID_SIZE || grid[ny][nx] != TILE)
-        {
-            return 0;
-        }
-        //
-        for (int row = ny - 1; row <= ny + 1; row++)
-        { // checks row by row
-            for (int col = nx - 1; col <= nx + 1; col++)
-            { // checks column by column
-                if (row >= 0 && row < GRID_SIZE && col >= 0 && col < GRID_SIZE)
-                {
-                    if (grid[row][col] == SHIP)
-                        return 0;
-                }
-            }
-        }
-    }
-    return 1;
+
+// Save the game state to a file
+void save_game(BattleFieldInfo *state) {
+	FILE *file = fopen(SAVE_FILE, "wb");
+	if (file == NULL) {
+		perror("Error opening save file");
+		return;
+	}
+	fwrite(state, sizeof(BattleFieldInfo), 1, file);
+	fclose(file);
 }
 
-void placeRandomShips(char grid[GRID_SIZE][GRID_SIZE], Ship ships[])
+// Load the game state from a file
+void load_game(BattleFieldInfo *state) {
+	FILE *file = fopen(SAVE_FILE, "rb");
+	if (file == NULL) {
+		return; // No save file found
+	}
+	fread(state, sizeof(BattleFieldInfo), 1, file);
+	fclose(file);
+}
+
+// Function to check if save file exists
+int save_file_exists() {
+	FILE *file = fopen(SAVE_FILE, "rb");
+	if (file) {
+		fclose(file);
+		return 1;
+	}
+	return 0;
+}
+
+
+int getColor(char tileSign) {
+	if(tileSign==TILE)
+		return 1;
+	else if(tileSign==HIT)
+		return 2;
+	else if(tileSign==MISS)
+		return 3;
+	else
+		return 4;
+}
+
+void displayMap(BattleFieldInfo *state) {
+
+	char(*grid)[ROW_SIZE] = state->parentGrid;
+	char(*grid2)[ROW_SIZE] = state->childGrid;
+
+
+	start_color();
+	use_default_colors();
+	init_pair(1, COLOR_WHITE, -1);  // for empty tile
+	init_pair(2, COLOR_RED, -1);    // hit
+	init_pair(3, COLOR_YELLOW, -1); // miss
+	init_pair(4, COLOR_BLUE, -1);   // ships (DESTROYER, BATTLESHIP, CRUISER)
+
+	printw("Player %s's Grid:      Player %s's Grid:\n", "parent", "child");
+
+	for (int i = 0; i < ROW_SIZE; i++) {
+		for (int j = 0; j < ROW_SIZE; j++) {
+			attron(COLOR_PAIR(getColor(grid[i][j])));
+			printw("%c ", grid[i][j]);
+			attroff(COLOR_PAIR(1) | COLOR_PAIR(2) | COLOR_PAIR(3) | COLOR_PAIR(4));
+		}
+
+		printw("           ");
+
+		for (int j = 0; j < ROW_SIZE; j++) {
+			attron(COLOR_PAIR(getColor(grid2[i][j])));
+			printw("%c ", grid2[i][j]);
+			attroff(COLOR_PAIR(1) | COLOR_PAIR(2) | COLOR_PAIR(3) | COLOR_PAIR(4));
+		}
+		printw("\n");
+	}
+	refresh(); // update terminal
+}
+
+int isPlaceAvailable(int x, int y, char grid[ROW_SIZE][ROW_SIZE], Ship ship, int dx, int dy)
 {
-    srand(time(NULL) * getpid() * 13);
-    int index = 0;
-    while (index < SHIPS)
-    {
-        int x = rand() % GRID_SIZE;
-        int y = rand() % GRID_SIZE;
+	for (int i = 0; i < ship.size; i++)
+	{
+		int nx = x + i * dx;
+		int ny = y + i * dy;
 
-        int dx = 0, dy = 0;
-        if (rand() % 2 == 0)
-            dx = 1;
-        else
-            dy = 1;
+		if (nx < 0 || nx >= ROW_SIZE || ny < 0 || ny >= ROW_SIZE || grid[ny][nx] != TILE)
+			return 0;
 
-        if (isPlaceAvailable(x, y, grid, ships[index], dx, dy))
-        {
-            for (int i = 0; i < ships[index].size; i++)
-            {
-                grid[y + i * dy][x + i * dx] = SHIP;
-            }
-            index += 1;
-        }
-    }
+		for (int row = (ny - 1 < 0 ? 0 : ny - 1); row <= (ny + 1 >= ROW_SIZE ? ROW_SIZE - 1 : ny + 1); row++)
+		{
+			for (int col = (nx - 1 < 0 ? 0 : nx - 1); col <= (nx + 1 >= ROW_SIZE ? ROW_SIZE - 1 : nx + 1); col++)
+			{
+				if (grid[row][col] == BATTLESHIP || grid[row][col] == CRUISER || grid[row][col] == DESTROYER)
+					return 0;
+			}
+		}
+	}
+	return 1;
 }
 
-void displayMap(char grid[GRID_SIZE][GRID_SIZE],int turn)
-{   
-    char* playerName=turn==1?"child":"parent";
-    printf("\n%s's field:\n", playerName);
-    for (int i = 0; i < GRID_SIZE; i++)
-    {
-        for (int j = 0; j < GRID_SIZE; j++)
-        {
-            printf("%c ", grid[i][j]);
-        }
-        printf("\n");
-    }
-    printf("\n");
-}
-int *getAdjacentPoint(char grid[GRID_SIZE][GRID_SIZE], int y, int x)
+void locateShips(char grid[ROW_SIZE][ROW_SIZE])
 {
-    static int point[2];
-    point[0] = y;
-    point[1] = x;
-    if (y + 1 < GRID_SIZE && (grid[y + 1][x] == SHIP || grid[y + 1][x] == TILE))
-        point[0] = y + 1;
-    else if (y - 1 >= 0 && (grid[y - 1][x] == SHIP || grid[y - 1][x] == TILE))
-        point[0] = y - 1;
-    else if(x+1<GRID_SIZE&&(grid[y][x+1]==SHIP||grid[y][x+1]==TILE))
-        point[1]= x+1;
-    else if(x-1>=0&&(grid[y][x-1]==SHIP||grid[y][x-1]==TILE))
-        point[1]=x-1;
-    
-    return point;
+	srand(time(NULL) * rand() * 13);
+	int index = 0;
+
+	while (index < SHIPS)
+	{
+		int x = rand() % ROW_SIZE;
+		int y = rand() % ROW_SIZE;
+		int dx = rand() % 2, dy = 1 - dx;
+
+		if (isPlaceAvailable(x, y, grid, ships[index], dx, dy))
+		{
+			for (int i = 0; i < ships[index].size; i++)
+			{
+				grid[y + i * dy][x + i * dx] = ships[index].sign;
+			}
+			index++;
+		}
+	}
 }
-void makeMove(BattleFieldInfo *state)
+int *getAdjacentPoint(char grid[ROW_SIZE][ROW_SIZE], int y, int x)//better approximation to estimate next points: down->right->up->left
 {
-    char *playerName,*z;
-    char(*grid)[GRID_SIZE];
-    int *remShip;
-    if (state->turn)
-    {
-        grid = state->parentGrid;
-        remShip = &state->remainingShipsPar;
-        playerName="child";
+	static int point[2];
+	point[0] = y;
+	point[1] = x;
+	if (y + 1 < ROW_SIZE && !(grid[y + 1][x] == MISS || grid[y + 1][x] == HIT))
+		point[0] = y + 1;
+	else if (x + 1 < ROW_SIZE && !(grid[y][x + 1] == MISS || grid[y][x + 1] == HIT))
+		point[1] = x + 1;
+	else if (y - 1 >= 0 && !(grid[y - 1][x] == MISS || grid[y - 1][x] == HIT))
+		point[0] = y - 1;
+	else if (x - 1 >= 0 && !(grid[y][x - 1] == MISS || grid[y][x - 1] == HIT))
+		point[1] = x - 1;
 
-    }
-    else
-    {
-        grid = state->childGrid;
-        remShip = &state->remainingShipsChild;
-        playerName="parent";
-    }
-
-    static int lastHit[2] = {-1, -1};
-    int isMove = 0;
-    int x, y;
-    int isHit;
-    while (!isMove)
-    {
-        if (lastHit[0] == -1)
-        {
-            z="random";
-            x = rand() % GRID_SIZE;
-            y = rand() % GRID_SIZE;
-
-            if (grid[y][x] == SHIP)
-            {
-                grid[y][x] = HIT;
-                isMove = 1;
-                (*remShip)--; // Decrement remaining ships
-                lastHit[0] = y;
-                lastHit[1] = x;
-                isHit=1;
-            }
-            else if (grid[y][x] == TILE)
-            {
-                grid[y][x] = MISS;
-                isMove = 1;
-            }
-        }
-        else
-        {
-            int *estimatedPoint = getAdjacentPoint(grid, lastHit[0], lastHit[1]);
-            if (estimatedPoint[0] == lastHit[0]&&estimatedPoint[1]==lastHit[1])
-            {
-                lastHit[0] = -1;
-                lastHit[1] = -1;
-            }
-            else
-            {
-                z="ai";
-                x = estimatedPoint[1];
-                y = estimatedPoint[0];
-                if (grid[y][x] == SHIP)
-                {
-                    grid[y][x] = HIT;
-                    isMove = 1;
-                    (*remShip)--;
-                    lastHit[0] = y;
-                    lastHit[1] = x;
-                    isHit=1;
-                }
-                else if (grid[y][x] == TILE)
-                {
-                    grid[y][x] = MISS;
-                    isMove = 1;
-                }
-            }
-        }
-    }
-    displayMap(grid,!state->turn);
-    printf("%s->%s attack:%d , %d\n--------------------------\n",z,playerName,y,x);
+	return point;
+}
+void updatePosition(int *arr, int y, int x)
+{
+	arr[0] = y;
+	arr[1] = x;
 }
 
-void createShips(Ship *ships)
+int isInsideGrid(int y, int x)
 {
-    int sizeOfShips[SHIPS] = {2, 2, 3, 3, 4};
-    for (int i = 0; i < SHIPS; i++)
-    {
-        ships[i].size = sizeOfShips[i];
-    }
+	return x >= 0 && x < ROW_SIZE && y >= 0 && y < ROW_SIZE;
 }
 
-int main()
+int isShip(char sign)
 {
-    srand(time(NULL)*13);
+	return sign == BATTLESHIP || sign == DESTROYER || sign == CRUISER;
+}
 
-    const char *shm_name = "Battlefield"; // name of the shared memory object
-    int shm_fd = shm_open(shm_name, O_CREAT | O_RDWR, 0666);
-    // Truncate shared memory to the size of battlefild
-    ftruncate(shm_fd, sizeof(BattleFieldInfo));
+Ship *getShip(BattleFieldInfo *state, char sign)
+{
+	Ship *s = state->turn == 1 ? state->parShips : state->childShips;
+	for (int i = 0; i < SHIPS; i++)
+	{
+		if (sign == s[i].sign && s[i].size > 0)
+			return &s[i];
+	}
 
-    BattleFieldInfo *state = mmap(0, sizeof(BattleFieldInfo), PROT_READ | PROT_WRITE, MAP_SHARED, shm_fd, 0);
+	return NULL;
+}
+int aiMove(BattleFieldInfo *state,char *pName)
+{	
+	sleep(1);
+	clear();
+	char(*grid)[ROW_SIZE] = (state->turn == 1) ? state->parentGrid : state->childGrid;
 
-    // Initializes maps
-    initializeMap(state->parentGrid);
-    initializeMap(state->childGrid);
-    printf("%d\n",state->turn);
-    state->remainingShipsChild = 14;
-    state->remainingShipsPar = 14;
+	static int lastHit[2] = {-1, -1};
+	static int hitDirect[2] = {0, 0}; // (up-down, left-right)
+	static int combo = 0;
+	if (combo > 1)//that means both random and estimated ai hitted a point
+	{
+		if(!isInsideGrid(lastHit[0] + hitDirect[0],lastHit[1] + hitDirect[1])) {
+			updatePosition(hitDirect, hitDirect[0] * -combo, hitDirect[1] * -combo);
+		}
+		int aiEst[2] = {lastHit[0] + hitDirect[0], lastHit[1] + hitDirect[1]};
+		if (isInsideGrid(aiEst[0], aiEst[1]))
+		{
+			char *pointSign = &grid[aiEst[0]][aiEst[1]];
+			if (isShip(*pointSign))
+			{
+				Ship *ship = getShip(state, *pointSign);
+				*pointSign = HIT;
+				printw("\t%s directed ai hit  %d,%d \n\n", pName, aiEst[0], aiEst[1]);
+				displayMap(state);
+				if((ship->size-=1)<=0) {
+					combo=0;
+					lastHit[0]=-1;
+					return 1;
+				}
+				combo += 1;
+				updatePosition(hitDirect, (aiEst[0] - lastHit[0]) % 2, (aiEst[1] - lastHit[1]) % 2);//readjust the direction {-1,0,1}
+				updatePosition(lastHit, aiEst[0], aiEst[1]);
+				return 1;
+			}
+			else if (*pointSign == TILE)
+			{
+				*pointSign = MISS;
+				printw("\t%s directed ai miss  %d,%d\n\n", pName, aiEst[0], aiEst[1]);
+				displayMap(state);
+				updatePosition(hitDirect, hitDirect[0] * -combo, hitDirect[1] * -combo);//reverse the direction If the ship hasn't sunk yet
+				return 1;
+			}
+			else if(*pointSign==MISS){
+				updatePosition(hitDirect, hitDirect[0] * -combo, hitDirect[1] * -combo);//reverse the direction If the ship hasn't sunk yet
+				aiMove(state,pName);
+				return 1;
+			}
+		}
+	}
+	else if (lastHit[0] != -1)
+	{
+		int *aiEst = getAdjacentPoint(grid, lastHit[0], lastHit[1]);
+		if (aiEst[0] != lastHit[0] || aiEst[1] != lastHit[1])
+		{
+			char *pointSign = &grid[aiEst[0]][aiEst[1]];
+			if (isShip(*pointSign))
+			{
+				Ship *ship = getShip(state, *pointSign);
+				*pointSign = HIT;
+				printw("\t%s, ai estimated hit %d,%d\n\n", pName, aiEst[0], aiEst[1]);
+				displayMap(state);
+				if((ship->size-=1)<=0) {
+					combo=0;
+					lastHit[0]=-1;
+					return 1;
+				}
+				combo += 1;
+				updatePosition(hitDirect, aiEst[0] - lastHit[0], aiEst[1] - lastHit[1]);
+				updatePosition(lastHit, aiEst[0], aiEst[1]);
+			}
+			else if (*pointSign == TILE)
+			{
+				*pointSign = MISS;
+				printw("\t%s, ai estimated miss %d,%d\n\n", pName, aiEst[0], aiEst[1]);
+				displayMap(state);
+			}
+			return 1;
+		}
+		lastHit[0] = -1;
+	}
 
-    pid_t pid = fork(); // creates child process
-    if (pid == -1)
-    { // failed to fork
-        exit(1);
-    }
-    Ship ships[SHIPS];
-    createShips(ships);
-    if (pid == 0)
-    {
-        placeRandomShips(state->childGrid, ships);
-        while (state->remainingShipsPar > 0 && state->remainingShipsChild > 0)
-        { // continues if both side have at least one ship
+	combo = 0;
+	while (1)
+	{
 
-            if (!state->turn)
-            {
-                makeMove(state);
-                if (state->remainingShipsPar > 0 && state->remainingShipsChild > 0)
-                    state->turn = 1;
-            }
-        }
-        usleep(5);
-        if (state->remainingShipsPar == 0)
-        {
-            printf("\nChild wins! Final Grids:\n");
-            displayMap(state->parentGrid, 0);
-            displayMap(state->childGrid, 1);
-        }
+		int x = rand() % ROW_SIZE;
+		int y = rand() % ROW_SIZE;
+		char *pointSign = &grid[y][x];
+		if (isShip(*pointSign))
+		{
+			Ship *ship = getShip(state, *pointSign);
+			ship->size = ship->size - 1;
+			*pointSign = HIT;
+			combo += 1;
+			printw("\t%s random hit %d,%d\n\n", pName, y, x);
+			displayMap(state);
+			updatePosition(lastHit, y, x);
+			return 1;
+		}
+		else if (*pointSign == TILE)
+		{
+			*pointSign = MISS;
+			printw("\t%s random miss %d,%d\n\n", pName, y, x);
+			displayMap(state);
+			return 1;
+		}
+	}
+	refresh();
+	clear();
+}
 
-        exit(0); // exit child process
-    }
-    else
-    {
-        placeRandomShips(state->parentGrid, ships);
-        while (state->remainingShipsPar > 0 && state->remainingShipsChild > 0)
-        { // continues if both side have at least one ship
+void initializeMap(char grid[ROW_SIZE][ROW_SIZE])
+{
+	for (int i = 0; i < ROW_SIZE; i++)
+		for (int j = 0; j < ROW_SIZE; j++)
+			grid[i][j] = TILE;
+}
 
-            if (state->turn)
-            {
-                makeMove(state);
-                if (state->remainingShipsPar > 0 && state->remainingShipsChild > 0)
-                    state->turn = 0;
-            }
-        }
-        usleep(5);
-        // Wait for child process to end
-        wait(NULL);
-        if (state->remainingShipsChild == 0)
-        {
-            printf("\nParent wins! Final Grids:\n");
-            displayMap(state->parentGrid, 0);
-            displayMap(state->childGrid, 1);
-        }
-    }
+int isGameOver(BattleFieldInfo *state)
+{
+	int parentShipsAlive = 0;
+	int childShipsAlive = 0;
 
-    // Cleanup the shared memory region(battlefield)
-    munmap(state, sizeof(BattleFieldInfo));
-    shm_unlink(shm_name);
+	for (int i = 0; i < SHIPS; i++)
+	{
+		if (state->parShips[i].size > 0)
+		{
+			parentShipsAlive = 1;
+			break;
+		}
+	}
 
-    return 0;
+	for (int i = 0; i < SHIPS; i++)
+	{
+		if (state->childShips[i].size > 0)
+		{
+			childShipsAlive = 1;
+			break;
+		}
+	}
+	return !(parentShipsAlive && childShipsAlive);
+}
+
+void whoWon(BattleFieldInfo *state){
+	if(state->turn){
+		printw("Child won the game!");
+	}
+	else{
+		printw("Parent won the game!");
+	}
+}
+
+void createGrids(BattleFieldInfo *state) { //This method creates the grids.
+	initializeMap(state->parentGrid);
+	initializeMap(state->childGrid);
+	locateShips(state->parentGrid);
+	locateShips(state->childGrid);
+	memcpy(state->parShips, ships, sizeof(ships));
+	memcpy(state->childShips, ships, sizeof(ships));
+}
+
+
+void menu() { // Menu method.
+	printw("1. Create First Grids\n");
+	printw("2. Start Game\n");
+	printw("3. Display Grids\n");
+	printw("4. Relocate Grids\n");
+	printw("5. Exit Game\n");
+	printw("Choose an option: ");
+}
+
+
+int main() {
+
+	int turnCount = 0;
+	int saveInterval = 5; // Save every 5 turns (or customize as needed)
+
+	srand(time(NULL) * 13);
+
+	const char *shm_name = "Battlefield";
+	int shm_fd = shm_open(shm_name, O_CREAT | O_RDWR, 0666);
+	ftruncate(shm_fd, sizeof(BattleFieldInfo));
+
+	BattleFieldInfo *state = mmap(0, sizeof(BattleFieldInfo), PROT_READ | PROT_WRITE, MAP_SHARED, shm_fd, 0);
+	char choice;
+
+	int createdGrids = 0;
+	initscr(); // login ncurses
+	noecho();
+	// Load the game state if a save file exists
+	if (save_file_exists()) {
+		printw("A saved game was found. Would you like to resume it? (y/n): ");
+		choice = getch();
+		clear();
+		if (choice == 'y' || choice == 'Y') {
+			load_game(state);
+			state->gameOver=0;
+			pid_t pid = fork(); // creates child process
+			if (pid == -1) { // failed to fork
+				exit(1);
+			}
+			if (pid == 0) {
+				while (!isGameOver(state)) {
+					if (state->turn && aiMove(state,"Child")&&!isGameOver(state)) {
+						state->turn = !state->turn;
+					}
+				}
+				exit(0); // exit child process
+			} else {
+				while (!isGameOver(state)) {
+					if (!state->turn && aiMove(state,"Parent")&&!isGameOver(state)) {
+						state->turn = !state->turn;
+					}
+					// Increment turn count and check if we should save
+					turnCount++;
+					if (turnCount % saveInterval == 0) {
+						save_game(state);
+					}
+				}
+				whoWon(state);
+				remove(SAVE_FILE);
+				printw("\nGame completed.\n");
+			}
+
+		} else {
+			// Initialize new game state if not resuming
+			memset(state, 0, sizeof(BattleFieldInfo));
+		}
+	} else {
+		// Initialize new game state if no save found
+		memset(state, 0, sizeof(BattleFieldInfo));
+	}
+	do {	// This loop makes game playable more than one time.
+		refresh();
+		menu();
+		choice = getch();
+		clear();
+		printw("\n");
+		switch (choice) {
+		case '1':
+			createGrids(state);
+			state->gameOver=0;
+			createdGrids = 1;
+			printw("Grids created.\n\n");
+			break;
+		case '2': {
+			if(!createdGrids) {
+				printw("You have to create grids first.\n\n");
+			}
+			else
+			{
+				pid_t pid = fork(); // creates child process
+				if (pid == -1) { // failed to fork
+					exit(1);
+				}
+				if (pid == 0) {
+					while (!isGameOver(state)) {
+						if (state->turn && aiMove(state,"Child")&&!isGameOver(state)) {
+							state->turn = !state->turn;
+						}
+					}
+					exit(0); // exit child process
+				} else {
+					while (!isGameOver(state)) {
+						if (!state->turn && aiMove(state,"Parent")&&!isGameOver(state)) {
+							state->turn = !state->turn;
+						}
+						// Increment turn count and check if we should save
+						turnCount++;
+						if (turnCount % saveInterval == 0) {
+							save_game(state);
+						}
+					}
+					whoWon(state);
+					remove(SAVE_FILE);
+					printw("\nGame completed.\n");
+				}
+			}
+			createdGrids = 0;
+			break;
+		}
+		case '3':
+			if(!createdGrids) {
+				printw("Grids must be created to display.\n\n");
+			} else
+			{
+				clear();
+				displayMap(state);
+			}
+			break;
+		case '4':
+			if(!createdGrids) {
+				printw("Grids must be created to relocate.\n\n");
+			} else
+			{
+				createGrids(state);
+				printw("Grids relocated.\n\n");
+			}
+			break;
+		case '5':
+			printw("Exiting game.\n");
+			refresh();
+			sleep(1);
+			break;
+		default:
+			printw("Invalid choice.\n\n");
+		}
+	} while (choice != '5');
+
+	endwin(); // logout ncurses
+
+	// Cleanup the shared memory region(battlefield)
+	munmap(state, sizeof(BattleFieldInfo));
+	shm_unlink(shm_name);
+
+	return 0;
 }
